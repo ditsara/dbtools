@@ -13,6 +13,23 @@ import (
 
 const TABLE_NAME = "messages"
 
+// user code - the only thing the library user needs to write
+type Message struct {
+	ID    *int
+	Title *string
+	Body  *string
+}
+
+func (m *Message) toTableMap(db *sql.DB) *TableMap {
+	tm := NewTableMap(db, TABLE_NAME)
+	tm.IntCol("id", FromInt(m.ID))
+	tm.StringCol("title", FromString(m.Title))
+	tm.StringCol("body", FromString(m.Body))
+	return tm
+}
+
+// end user code
+
 func main() {
 	db, err := sql.Open("sqlite3", "./foo.db")
 	checkErr(err)
@@ -34,6 +51,30 @@ func main() {
 
 	msg = Message{ID: &id}
 	tm = msg.toTableMap(db)
+
+	// Setting the struct from the database is still pretty clunky. The
+	// alternatives are:
+	//
+	// 1. store pointers from the struct in a closure, then set
+	// value of the pointer; the problem with this is if the pointers are nil,
+	// you can't re-set the underlying value and still have it associated with
+	// the struct.
+	//
+	// 2. the method below, where I've at least abstracted away the boilerplate
+	// and the user just provides a function to process sql.Rows
+	//
+	// 3. use reflection. the performance penalty probably doesn't matter, and
+	// we can store the correct setters in a closure to prevent bugs. But it's
+	// still basically "unsafe" code.
+	//
+	// example of setting a field with reflection
+	// val := reflect.ValueOf(&n)
+	// (val.Elem()).FieldByName("title").SetString("My Title")
+	//
+	// 4. I'm sure there's also an approach using type assertions (rows.Scan into
+	// an appropriately-sized array of interface{}), and like reflection we could
+	// store the type assertion in the appropriately-typed closure. But then we
+	// still have the null pointer problem.
 
 	var fetchedMessages []Message
 	err = tm.Find(func(rows *sql.Rows) error {
@@ -60,21 +101,6 @@ func checkErr(err error) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-// user code
-type Message struct {
-	ID    *int
-	Title *string
-	Body  *string
-}
-
-func (m *Message) toTableMap(db *sql.DB) *TableMap {
-	tm := NewTableMap(db, TABLE_NAME)
-	tm.IntCol("id", FromInt(m.ID))
-	tm.StringCol("title", FromString(m.Title))
-	tm.StringCol("body", FromString(m.Body))
-	return tm
 }
 
 // library code
@@ -206,7 +232,7 @@ type TableMapInput func() sql.NullString
 // The ___Col methods associate the given input with a typed DB column and
 // ensure it's compatible with that column type. For example:
 // - IntCol checks to ensure the given value is a valid integer in SQL.
-// - TimeCol (TBD) will run CONVERT on the value.
+// - TimeCol (TBD) would run the db function CONVERT on the value (for postgres).
 
 func (f *TableMap) IntCol(name string, input TableMapInput) {
 	inputChecked := func() sql.NullString {
@@ -232,8 +258,7 @@ func (f *TableMap) StringCol(name string, input TableMapInput) {
 }
 
 // The From_____ methods basically take the column and converts it into a
-// sql.NullString.  We'll do nil-handling later in GetFields and
-// GetFieldsWithoutNulls.
+// sql.NullString.  We'll do nil-handling later in getFieldsHelper.
 
 func FromString(v *string) TableMapInput {
 	return func() sql.NullString {
